@@ -1,4 +1,4 @@
-name: Deploy winrate-site to GitHub Pages
+name: Deploy contest-winrate to GitHub Pages
 
 on:
   push:
@@ -32,16 +32,19 @@ jobs:
         with:
           node-version: "22"
           cache: "pnpm"
+          cache-dependency-path: contest-winrate/pnpm-lock.yaml
 
       - name: Install dependencies and build
+        working-directory: contest-winrate
         run: |
           pnpm install --frozen-lockfile
           pnpm run build
+          ls -la dist
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
-          path: dist
+          path: contest-winrate/dist
 
       - name: Deploy to GitHub Pages
         uses: actions/deploy-pages@v4
