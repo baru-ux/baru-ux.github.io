@@ -1,125 +1,174 @@
-const pct = (v) => `${(v * 100).toFixed(2)}%`;
-
-function mountSide(containerId, prefix) {
-  const root = document.getElementById(containerId);
-  for (let s = 1; s <= 3; s++) {
-    const card = document.createElement("div");
-    card.className = "stage-card";
-    card.innerHTML = `<div style="font-weight:700;font-size:0.85rem;">ステージ ${s}</div>`;
-    for (let c = 1; c <= 3; c++) {
-      const row = document.createElement("div");
-      row.className = "slot-row";
-      row.innerHTML = `<span>枠 ${c}</span><input id="${prefix}-${s}-${c}" type="text" placeholder="編成URL またはクエリ文字列" />`;
-      card.appendChild(row);
-    }
-    root.appendChild(card);
-  }
-}
-
-mountSide("inputsA", "a");
-mountSide("inputsB", "b");
-
-const runBtn = document.getElementById("runBtn");
-const exportBtn = document.getElementById("exportBtn");
-const errorBox = document.getElementById("errorBox");
-const statusText = document.getElementById("statusText");
-const progressBar = document.getElementById("progressBar");
-const resultPanel = document.getElementById("resultPanel");
-const kpiMain = document.getElementById("kpiMain");
-const kpiSub = document.getElementById("kpiSub");
-const stageBody = document.getElementById("stageBody");
+const STAGES_PER_MATCH = 3;
+const SLOTS_PER_STAGE = 3;
 
 let worker = null;
-let lastResult = null;
+let workerReady = false;
+let isSimulating = false;
 
-function readGrid(prefix) {
-  return [1, 2, 3].map((s) =>
-    [1, 2, 3].map((c) => document.getElementById(`${prefix}-${s}-${c}`).value)
-  );
-}
+const els = {
+  runBtn: document.querySelector("#run-btn"),
+  cancelBtn: document.querySelector("#cancel-btn"),
+  trialsInput: document.querySelector("#trials-input"),
+  chunkInput: document.querySelector("#chunk-input"),
+  statusText: document.querySelector("#status-text"),
+  progressBar: document.querySelector("#progress-bar"),
+  resultBox: document.querySelector("#result-box"),
+};
 
-runBtn.addEventListener("click", () => {
-  errorBox.style.display = "none";
-  errorBox.textContent = "";
-  resultPanel.style.display = "none";
-  exportBtn.disabled = true;
+function createWorker() {
+  workerReady = false;
+  const w = new Worker("./worker.js", { type: "module" });
 
-  const n = Number(document.getElementById("trials").value);
-  const seedA = Number(document.getElementById("seedA").value);
-  const seedB = Number(document.getElementById("seedB").value);
+  w.addEventListener("message", (event) => {
+    const msg = event.data;
+    if (!msg || typeof msg !== "object") return;
 
-  if (!Number.isFinite(n) || n < 1) {
-    errorBox.style.display = "block";
-    errorBox.textContent = "試行回数 (N) には1以上の数値を指定してください。";
-    return;
-  }
-
-  if (worker) worker.terminate();
-  worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
-
-  runBtn.disabled = true;
-  progressBar.style.width = "0%";
-  statusText.textContent = "Worker を起動中...";
-
-  worker.addEventListener("message", (event) => {
-    const data = event.data;
-    if (data.type === "progress") {
-      statusText.textContent = data.message;
-      progressBar.style.width = `${(data.step / data.total) * 100}%`;
-    } else if (data.type === "done") {
-      const r = data.result;
-      lastResult = r;
-      statusText.textContent = "完了しました。";
-      progressBar.style.width = "100%";
-
-      kpiMain.textContent = `Aのマッチ勝率: ${pct(r.matchWinRateA)}（95%信頼区間: ${pct(r.ci95.lower)} 〜 ${pct(r.ci95.upper)}）`;
-      kpiSub.textContent = `平均獲得ステージ数: ${r.avgStageWinsA.toFixed(2)} / 3.00 ｜ 同点+1点適用回数: ${r.tieBreakCount}回 ｜ 試行回数: ${r.n}`;
-
-      stageBody.innerHTML = "";
-      for (const st of r.stages) {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `
-          <td>ステージ ${st.stage}</td>
-          <td>${pct(st.winRate)} (${st.winCount}/${r.n})</td>
-          <td>${st.meanA.toLocaleString()}</td>
-          <td>${st.sdA.toLocaleString()}</td>
-          <td>${st.meanB.toLocaleString()}</td>
-          <td>${st.sdB.toLocaleString()}</td>
-        `;
-        stageBody.appendChild(tr);
+    if (msg.type === "ready") {
+      workerReady = true;
+      if (!isSimulating) {
+        setStatus("待機中（Worker準備完了）", 0);
       }
+      return;
+    }
 
-      resultPanel.style.display = "block";
-      exportBtn.disabled = false;
-      runBtn.disabled = false;
-      worker.terminate();
-      worker = null;
-    } else if (data.type === "error") {
-      errorBox.style.display = "block";
-      errorBox.textContent = data.error;
-      statusText.textContent = "エラーが発生しました。";
-      runBtn.disabled = false;
-      worker.terminate();
-      worker = null;
+    if (msg.type === "progress") {
+      const pct = msg.total > 0 ? Math.min(100, (msg.current / msg.total) * 100) : 0;
+      const extra =
+        typeof msg.winRateA === "number"
+          ? ` — 暫定A勝率: ${(msg.winRateA * 100).toFixed(1)}%`
+          : "";
+      setStatus(`${msg.label}${extra}`, pct);
+      return;
+    }
+
+    if (msg.type === "done") {
+      isSimulating = false;
+      updateControls();
+      setStatus(`完了（${msg.trials} 試行）`, 100);
+      renderResult(msg);
+      return;
+    }
+
+    if (msg.type === "cancelled") {
+      isSimulating = false;
+      updateControls();
+      setStatus("キャンセルされました", 0);
+      return;
+    }
+
+    if (msg.type === "error") {
+      isSimulating = false;
+      updateControls();
+      setStatus("エラーが発生しました", 0);
+      if (els.resultBox) {
+        els.resultBox.textContent = `エラー: ${msg.message}`;
+      }
     }
   });
 
-  worker.postMessage({
-    urlsA: readGrid("a"),
-    urlsB: readGrid("b"),
-    n,
-    seedA,
-    seedB,
+  w.addEventListener("error", (err) => {
+    isSimulating = false;
+    workerReady = false;
+    updateControls();
+    setStatus("Workerエラー", 0);
+    if (els.resultBox) {
+      els.resultBox.textContent = `Workerエラー: ${err.message || "読み込みに失敗しました"}`;
+    }
+    worker = null;
   });
-});
 
-exportBtn.addEventListener("click", () => {
-  if (!lastResult) return;
-  const blob = new Blob([JSON.stringify(lastResult, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "contest_winrate_result.json";
-  a.click();
-  URL.revokeObjectURL(url);
-});
+  w.postMessage({ type: "ping" });
+  return w;
+}
+
+function ensureWorker() {
+  if (!worker) {
+    worker = createWorker();
+  }
+  return worker;
+}
+
+function setStatus(text, percent) {
+  if (els.statusText) {
+    els.statusText.textContent = text;
+  }
+  if (els.progressBar) {
+    els.progressBar.value = percent;
+    els.progressBar.style.width = `${percent}%`;
+  }
+}
+
+function updateControls() {
+  if (els.runBtn) els.runBtn.disabled = isSimulating;
+  if (els.cancelBtn) els.cancelBtn.disabled = !isSimulating;
+}
+
+function collectSideInputs(sidePrefix) {
+  const stages = [];
+  for (let s = 1; s <= STAGES_PER_MATCH; s++) {
+    const slots = [];
+    for (let i = 1; i <= SLOTS_PER_STAGE; i++) {
+      const input =
+        document.querySelector(`[data-side="${sidePrefix}"][data-stage="${s}"][data-slot="${i}"]`) ??
+        document.querySelector(`#${sidePrefix}-s${s}-p${i}`);
+      slots.push(input ? input.value.trim() : "");
+    }
+    stages.push(slots);
+  }
+  return stages;
+}
+
+function renderResult(data) {
+  if (!els.resultBox) return;
+  const winPct = (data.winRateA * 100).toFixed(2);
+  const lowPct = (data.ci95Low * 100).toFixed(2);
+  const highPct = (data.ci95High * 100).toFixed(2);
+
+  const stageLines = data.stages.map(
+    (st) =>
+      `Stage ${st.stage}: A勝率 ${(st.winRateA * 100).toFixed(1)}% | ` +
+      `A平均 ${Math.round(st.meanA).toLocaleString()} (SD ${Math.round(st.sdA).toLocaleString()}) vs ` +
+      `B平均 ${Math.round(st.meanB).toLocaleString()} (SD ${Math.round(st.sdB).toLocaleString()})`
+  );
+
+  els.resultBox.textContent = [
+    `マッチ勝率 (Team A): ${winPct}% (95% CI: ${lowPct}% ～ ${highPct}%)`,
+    ...stageLines,
+  ].join("\n");
+}
+
+function startSimulation() {
+  if (isSimulating) return;
+  const w = ensureWorker();
+  const trials = Math.max(1, Number(els.trialsInput?.value) || 1000);
+  const chunkSize = Math.max(1, Number(els.chunkInput?.value) || 100);
+  const sideA = collectSideInputs("A");
+  const sideB = collectSideInputs("B");
+
+  isSimulating = true;
+  updateControls();
+  if (els.resultBox) els.resultBox.textContent = "";
+  setStatus(workerReady ? "編成を読み込み中 (0/18)..." : "Worker初期化・編成読み込み中...", 0);
+
+  w.postMessage({
+    type: "run",
+    trials,
+    chunkSize,
+    sideA,
+    sideB,
+  });
+}
+
+function cancelSimulation() {
+  if (!isSimulating || !worker) return;
+  worker.postMessage({ type: "cancel" });
+  setStatus("キャンセル処理中...", 0);
+}
+
+// ページ読み込み時に Worker を事前起動（プリウォーム）
+setStatus("Workerを事前起動中...", 0);
+ensureWorker();
+updateControls();
+
+els.runBtn?.addEventListener("click", startSimulation);
+els.cancelBtn?.addEventListener("click", cancelSimulation);
