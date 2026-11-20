@@ -30,6 +30,7 @@
     .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(460px, 1fr)); gap: 18px; margin-bottom: 18px; }
     .stage-card { border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; background: #fafbfd; }
     .stage-card:last-child { margin-bottom: 0; }
+    .stage-title { font-size: 0.88rem; font-weight: 700; color: #334155; }
     .slot-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
     .slot-row span { width: 42px; font-size: 0.8rem; color: #64748b; }
     .slot-row input { flex: 1; padding: 7px 9px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 0.85rem; }
@@ -46,7 +47,7 @@
 </head>
 <body>
   <div class="wrap">
-    <h1>コンテスト勝率計算機</h1>
+    <h1>コンテスト勝率予想</h1>
     <div class="panel controls">
       <label>試行回数 (N)
         <input id="trials" type="number" min="1" max="50000" value="500" />
@@ -87,9 +88,9 @@
           <tr>
             <th>ステージ</th>
             <th>A 勝率</th>
-            <th>A 平均点</th>
+            <th>A 平均スコア</th>
             <th>A SD</th>
-            <th>B 平均点</th>
+            <th>B 平均スコア</th>
             <th>B SD</th>
           </tr>
         </thead>
