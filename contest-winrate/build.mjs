@@ -71,8 +71,9 @@ function parseCsvRows(text) {
 
 function autoCastValue(raw) {
   if (raw === "") return "";
-  if (raw === "true") return true;
-  if (raw === "false") return false;
+  const lower = raw.toLowerCase();
+  if (lower === "true") return true;
+  if (lower === "false") return false;
   if (/^-?\d+(\.\d+)?$/.test(raw)) {
     const num = Number(raw);
     if (Number.isSafeInteger(num) || raw.includes(".")) return num;
